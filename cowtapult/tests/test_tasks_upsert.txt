@@ -1,0 +1,102 @@
+>>> from tasks import upsert, celery
+
+>>> celery.conf.CELERY_ALWAYS_EAGER = True
+
+>>> contact_data = []
+>>> contact_data.append({'FirstName': 'Jason', 'LastName': 'Lantz', 'Email': 'jlantz@mailinator.com'})
+>>> contact_data.append({'FirstName': 'John', 'LastName': 'Doe', 'Email': 'johndoe@mailinator.com'})
+>>> contact_data.append({'FirstName': 'Jon', 'LastName': 'Smith', 'Email': 'jonsmith@mailinator.com'})
+>>> opportunity_data = []
+>>> opportunity_data.append({'Name': 'Test Donation 1', 'Amount': 100, 'StageName': 'Posted', 'CloseDate': '2013-04-01'})
+>>> opportunity_data.append({'Name': 'Test Donation 2', 'Amount': 75, 'StageName': 'Posted', 'CloseDate': '2012-04-02'})
+>>> opportunity_data.append({'Name': 'Test Donation 3', 'Amount': 50, 'StageName': 'Posted', 'CloseDate': '2012-04-03'})
+>>> opprole_data = []
+>>> opprole_data.append({'ContactId': None, 'OpportunityId': None, 'Role': 'Economic Buyer', 'IsPrimary': True})
+>>> opprole_data.append({'ContactId': None, 'OpportunityId': None, 'Role': 'Decision Maker', 'IsPrimary': True})
+>>> opprole_data.append({'ContactId': None, 'OpportunityId': None, 'Role': 'Decision Maker', 'IsPrimary': True})
+>>> contact_ids = []
+>>> opportunity_ids = []
+>>> opprole_ids = []
+
+### Create Contact 1
+>>> res = upsert.delay(contact_data[0], 'Contact')
+>>> res.status
+'SUCCESS'
+>>> contact_ids.append(res.result[0]['Id'])
+>>> res.result # doctest:+ELLIPSIS
+({'LastName': 'Lantz', 'Email': 'jlantz@mailinator.com', 'FirstName': 'Jason', 'Id': u'003...'}, 'Contact')
+
+
+### Create Contact 2
+>>> res = upsert.delay(contact_data[1], 'Contact')
+>>> res.status
+'SUCCESS'
+>>> contact2_id = res.result[0]['Id']
+>>> res.result # doctest:+ELLIPSIS
+({'LastName': 'Doe', 'Email': 'johndoe@mailinator.com', 'FirstName': 'John', 'Id': u'003...'}, 'Contact')
+
+
+### Upsert against Contact 1 using prefilled Id changing email address
+>>> contact_data[0]['Email'] = 'jasonlantz@mailinator.com'
+>>> res = upsert.delay(contact_data[0], 'Contact')
+>>> res.status
+'SUCCESS'
+>>> res.result # doctest:+ELLIPSIS
+({'LastName': 'Lantz', 'Email': 'jasonlantz@mailinator.com', 'FirstName': 'Jason', 'Id': u'003...'}, 'Contact')
+
+
+### Upsert against Contact 1 via email match
+>>> res = upsert.delay(contact_data[0], 'Contact', match='Email')
+>>> res.status
+'SUCCESS'
+>>> res.result # doctest:+ELLIPSIS
+({'LastName': 'Lantz', 'Email': 'jasonlantz@mailinator.com', 'FirstName': 'Jason', 'Id': u'003...'}, 'Contact')
+
+
+### Create a new Opportunity for Contact 1
+>>> res = upsert.delay(opportunity_data[0], 'Opportunity')
+>>> res.status
+'SUCCESS'
+>>> opportunity_ids.append(res.result[0]['Id'])
+>>> res.result # doctest:+ELLIPSIS
+({'CloseDate': '2013-04-01', 'Amount': 100, 'Name': 'Test Donation 1', 'StageName': 'Posted', 'Id': u'006...'}, 'Opportunity')
+
+
+### Create an OpportunityContactRole for Opportunity 1 manually filling in Ids
+>>> opprole_data[0]['ContactId'] = contact_ids[0]
+>>> opprole_data[0]['OpportunityId'] = opportunity_ids[0]
+>>> res = upsert.delay(opprole_data[0], 'OpportunityContactRole')
+>>> res.status
+'SUCCESS'
+>>> opprole_ids.append(res.result[0]['Id'])
+>>> res.result # doctest:+ELLIPSIS
+({'ContactId': u'003...', 'IsPrimary': True, 'Role': 'Economic Buyer', 'OpportunityId': u'006...', 'Id': u'00K...'}, 'OpportunityContactRole')
+
+
+### Use a Canvas chain to create a new Opportunity linked to existing Contact 2
+>>> from celery import chain
+>>> opprole_merge = {'ContactId': (1,'Id'), 'OpportunityId': (0,'Id')}
+>>> t_contact = upsert.s(contact_data[1], 'Contact')
+>>> t_opportunity = upsert.s(opportunity_data[1], 'Opportunity')
+>>> t_opprole = upsert.s(opprole_data[1], 'OpportunityContactRole', merge=opprole_merge, debug=True)
+>>> chain1 = chain(t_opportunity, t_contact, t_opprole)
+>>> res = chain1.apply_async(retry=True, retry_policy={'max_retries': 10, 'interval_start': 1, 'interval_step': 30, 'interval_max': 300})
+>>> res.status
+'SUCCESS'
+>>> res.result # doctest: +ELLIPSIS
+(({'CloseDate': '2012-04-02', 'Amount': 75, 'Name': 'Test Donation 2', 'StageName': 'Posted', 'Id': u'006...'}, {'LastName': 'Doe', 'Email': 'johndoe@mailinator.com', 'FirstName': 'John', 'Id': u'003...'}, {'ContactId': u'003...', 'IsPrimary': True, 'Role': 'Decision Maker', 'OpportunityId': u'006...', 'Id': u'00K...'}), 'OpportunityContactRole')
+
+
+### Use a Canvas chain to create a new Opportunity linked to new Contact 3 with retry config (actual retry not tested)
+>>> from celery import chain
+>>> opprole_merge = {'ContactId': (1,'Id'), 'OpportunityId': (0,'Id')}
+>>> t_contact = upsert.s(contact_data[2], 'Contact')
+>>> t_opportunity = upsert.s(opportunity_data[2], 'Opportunity')
+>>> t_opprole = upsert.s(opprole_data[2], 'OpportunityContactRole', merge=opprole_merge, debug=True)
+>>> chain2 = chain(t_opportunity, t_contact, t_opprole)
+>>> res = chain2.apply_async(retry=True, retry_policy={'max_retries': 10, 'interval_start': 1, 'interval_step': 30, 'interval_max': 300})
+>>> res.status
+'SUCCESS'
+>>> res.result # doctest: +ELLIPSIS
+(({'CloseDate': '2012-04-03', 'Amount': 50, 'Name': 'Test Donation 3', 'StageName': 'Posted', 'Id': u'006...'}, {'LastName': 'Smith', 'Email': 'jonsmith@mailinator.com', 'FirstName': 'Jon', 'Id': u'003...'}, {'ContactId': u'003...', 'IsPrimary': True, 'Role': 'Decision Maker', 'OpportunityId': u'006...', 'Id': u'00K...'}), 'OpportunityContactRole')
+
