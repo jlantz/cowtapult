@@ -9,4 +9,4 @@ BROKER_PORT = 5672
 #BROKER_VHOST = "celeryvhost"
 
 CELERY_RESULT_BACKEND = "amqp"
-CELERY_IMPORTS = ("sfchange",)
+CELERY_IMPORTS = ("tasks",)
